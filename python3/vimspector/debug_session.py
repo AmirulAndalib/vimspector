@@ -1425,12 +1425,16 @@ class DebugSession( object ):
       vim.command( f'sleep { attach_config[ "delay" ] }' )
 
 
-  def _PrepareLaunch( self, command_line, adapter_config, launch_config ):
+  def _PrepareLaunch( self,
+                      command_line,
+                      remote_env,
+                      adapter_config,
+                      launch_config ):
     run_config = adapter_config.get( 'launch', {} )
 
     if 'remote' in run_config:
       remote = run_config[ 'remote' ]
-      remote_exec_cmd = self._GetRemoteExecCommand( remote )
+      remote_exec_cmd = self._GetRemoteExecCommand( remote, remote_env )
       commands = self._GetCommands( remote, 'run' )
 
       for index, command in enumerate( commands ):
@@ -1441,7 +1445,8 @@ class DebugSession( object ):
             if item == '%CMD%':
               full_cmd.extend( command_line )
             else:
-              full_cmd.append( item )
+              full_cmd.append( item.replace( '%CMD%',
+                                             ' '.join( command_line ) ) )
           else:
             full_cmd.append( item.replace( '%CMD%', command_line ) )
 
@@ -1449,8 +1454,9 @@ class DebugSession( object ):
         self._remote_term = terminal.LaunchTerminal(
             self._api_prefix,
             {
-                'args': full_cmd,
-                'cwd': os.getcwd()
+              'args': full_cmd,
+              'cwd': os.getcwd(),
+              'env': remote_env,
             },
             self._codeView._window,
             self._remote_term )
@@ -1460,37 +1466,34 @@ class DebugSession( object ):
       vim.command( f'sleep { run_config[ "delay" ] }' )
 
 
-
-  def _GetSSHCommand( self, remote ):
+  def _GetSSHCommand( self, remote, env=None ):
     ssh = [ 'ssh' ] + remote.get( 'ssh', {} ).get( 'args', [] )
     if 'account' in remote:
       ssh.append( remote[ 'account' ] + '@' + remote[ 'host' ] )
     else:
       ssh.append( remote[ 'host' ] )
 
-    return ssh
+    return ssh + EnvCmd( env )
 
-  def _GetShellCommand( self ):
-    return []
+  def _GetShellCommand( self, env = None ):
+    return EnvCmd( env )
 
-  def _GetDockerCommand( self, remote ):
-    docker = [ 'docker', 'exec' ]
-    docker.append( remote[ 'container' ] )
-    return docker
+  def _GetDockerCommand( self, remote, env = None ):
+    return [ 'docker', 'exec', remote[ 'container' ] ] + EnvCmd( env )
 
-  def _GetRemoteExecCommand( self, remote ):
+  def _GetRemoteExecCommand( self, remote, env = None ):
     is_ssh_cmd = any( key in remote for key in [ 'ssh',
                                                  'host',
                                                  'account', ] )
     is_docker_cmd = 'container' in remote
 
     if is_ssh_cmd:
-      return self._GetSSHCommand( remote )
+      return self._GetSSHCommand( remote, env )
     elif is_docker_cmd:
-      return self._GetDockerCommand( remote )
+      return self._GetDockerCommand( remote, env )
     else:
       # if it's neither docker nor ssh, run locally
-      return self._GetShellCommand()
+      return self._GetShellCommand( env )
 
 
   def _GetCommands( self, remote, pfx ):
@@ -1589,6 +1592,9 @@ class DebugSession( object ):
 
       self._PrepareAttach( self._adapter, self._launch_config )
     elif request == "launch":
+      remote_env = self._configuration.get( 'remote-env', {} )
+      remote_env.update( self._launch_config.get( 'env', {} ) )
+
       self._splash_screen = utils.DisplaySplash(
         self._api_prefix,
         self._splash_screen,
@@ -1596,6 +1602,7 @@ class DebugSession( object ):
 
       # FIXME: This cmdLine hack is not fun.
       self._PrepareLaunch( self._configuration.get( 'remote-cmdLine', [] ),
+                           remote_env,
                            self._adapter,
                            self._launch_config )
 
@@ -1971,4 +1978,14 @@ def PathsToAllConfigFiles( vimspector_base, current_file, filetypes ):
                                   os.path.dirname( current_file ) )
 
   yield utils.PathToConfigFile( '.vimspector.json',
+
                                 os.path.dirname( current_file ) )
+
+
+def EnvCmd( env ):
+  if not env:
+    return []
+
+  return [ '/usr/bin/env' ] + [ key + '=' + value
+                                for key, value in env.items() ]
+
